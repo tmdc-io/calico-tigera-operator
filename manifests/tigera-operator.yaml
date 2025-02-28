@@ -77,6 +77,7 @@ rules:
       - clusterinformations.crd.projectcalico.org
       - felixconfigurations.crd.projectcalico.org
       - globalnetworkpolicies.crd.projectcalico.org
+      - stagedglobalnetworkpolicies.crd.projectcalico.org
       - globalnetworksets.crd.projectcalico.org
       - hostendpoints.crd.projectcalico.org
       - ipamblocks.crd.projectcalico.org
@@ -86,8 +87,11 @@ rules:
       - ipreservations.crd.projectcalico.org
       - kubecontrollersconfigurations.crd.projectcalico.org
       - networkpolicies.crd.projectcalico.org
+      - stagednetworkpolicies.crd.projectcalico.org
+      - stagedkubernetesnetworkpolicies.crd.projectcalico.org
       - networksets.crd.projectcalico.org
       - tiers.crd.projectcalico.org
+      - whiskers.operator.tigera.io
   - apiGroups:
       - ""
     resources:
@@ -192,6 +196,7 @@ rules:
       - apiservers
       - apiservers/status
       - imagesets
+      - whiskers
     verbs:
       - get
       - list

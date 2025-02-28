@@ -28,6 +28,7 @@ import (
 	"github.com/projectcalico/calico/felix/hashutils"
 	"github.com/projectcalico/calico/felix/iptables"
 	"github.com/projectcalico/calico/felix/types"
+	"github.com/projectcalico/calico/libcalico-go/lib/backend/model"
 )
 
 const (
@@ -352,10 +353,13 @@ func (r *DefaultRuleRenderer) PolicyGroupToIptablesChains(group *PolicyGroup) []
 		polChainPrefix = PolicyOutboundPfx
 	}
 	// To keep the number of rules low, we only drop a RETURN rule every
-	// returnStride jump rules.
+	// returnStride jump rules and only if one of the jump rules was to a
+	// non-staged policy.  Staged policies don't set the mark bits when they
+	// fire.
 	const returnStride = 5
+	seenNonStagedPolThisStride := false
 	for i, polName := range group.PolicyNames {
-		if i != 0 && i%returnStride == 0 {
+		if i != 0 && i%returnStride == 0 && seenNonStagedPolThisStride {
 			// If policy makes a verdict (i.e. the pass or accept bit is
 			// non-zero) return to the per-endpoint chain.  Note: the per-endpoint
 			// chain has a similar rule that only checks the accept bit.  Pass
@@ -366,12 +370,14 @@ func (r *DefaultRuleRenderer) PolicyGroupToIptablesChains(group *PolicyGroup) []
 				Action:  r.Return(),
 				Comment: []string{"Return on verdict"},
 			})
+			seenNonStagedPolThisStride = false
 		}
 
 		var match generictables.MatchCriteria
-		if i%returnStride == 0 {
+		if i%returnStride == 0 || !seenNonStagedPolThisStride {
 			// Optimisation, we're the first rule in a block, immediately after
-			// start of chain or a RETURN rule.  No need to check the return bits.
+			// start of chain or a RETURN rule, or, there are no non-staged
+			// policies ahead of us (so the mark bits cannot be set).
 			match = r.NewMatch()
 		} else {
 			// We're not the first rule in a block, only jump to this policy if
@@ -388,6 +394,9 @@ func (r *DefaultRuleRenderer) PolicyGroupToIptablesChains(group *PolicyGroup) []
 			Match:  match,
 			Action: r.Jump(chainToJumpTo),
 		})
+		if !model.PolicyIsStaged(polName) {
+			seenNonStagedPolThisStride = true
+		}
 	}
 	return []*generictables.Chain{{
 		Name:  group.ChainName(),
@@ -488,8 +497,16 @@ func (r *DefaultRuleRenderer) endpointIptablesChain(
 				Comment: []string{"Start of tier " + tier.Name},
 			})
 
+			// Track if any of the policies are not staged. If all of the policies in a tier are staged
+			// then the default end of tier behavior should be pass rather than drop.
+			endOfTierDrop := false
+
 			for _, polGroup := range policyGroups {
 				var chainsToJumpTo []string
+				groupHasNonStagedPols := polGroup.HasNonStagedPolicies()
+				if groupHasNonStagedPols {
+					endOfTierDrop = true
+				}
 				if polGroup.ShouldBeInlined() {
 					// Group is too small to have its own chain.
 					for _, p := range polGroup.PolicyNames {
@@ -511,6 +528,13 @@ func (r *DefaultRuleRenderer) endpointIptablesChain(
 						Action: r.Jump(chainToJumpTo),
 					})
 
+					// Optimisation: skip rendering return rules if we know all the policies in
+					// the group are staged.  Staged policies do not set the accept/pass mark bits
+					// when they fire.
+					if !groupHasNonStagedPols {
+						continue
+					}
+
 					// If policy marked packet as accepted, it returns, setting the accept
 					// mark bit.
 					if chainType == chainTypeUntracked {
@@ -531,23 +555,24 @@ func (r *DefaultRuleRenderer) endpointIptablesChain(
 			}
 
 			if chainType == chainTypeNormal || chainType == chainTypeForward {
-				if tier.DefaultAction != string(v3.Pass) {
+				if endOfTierDrop && tier.DefaultAction != string(v3.Pass) {
 					// When rendering normal and forward rules, if no policy marked the packet as "pass", drop the
 					// packet.
 					//
 					// For untracked and pre-DNAT rules, we don't do that because there may be
 					// normal rules still to be applied to the packet in the filter table.
-					rules = append(rules, generictables.Rule{
-						Match:  r.NewMatch().MarkClear(r.MarkPass),
-						Action: r.Nflog(nflogGroup, CalculateEndOfTierDropNFLOGPrefixStr(dir, tier.Name), 0),
-					})
-
+					if r.FlowLogsEnabled {
+						rules = append(rules, generictables.Rule{
+							Match:  r.NewMatch().MarkClear(r.MarkPass),
+							Action: r.Nflog(nflogGroup, CalculateEndOfTierDropNFLOGPrefixStr(dir, tier.Name), 0),
+						})
+					}
 					rules = append(rules, generictables.Rule{
 						Match:   r.NewMatch().MarkClear(r.MarkPass),
 						Action:  r.IptablesFilterDenyAction(),
 						Comment: []string{fmt.Sprintf("%s if no policies passed packet", r.IptablesFilterDenyAction())},
 					})
-				} else {
+				} else if r.FlowLogsEnabled {
 					// If we do not require an end of tier drop (i.e. because all of the policies in the tier are
 					// staged), then add an end of tier pass nflog action so that we can at least track that we
 					// would hit end of tier drop. This simplifies the processing in the collector.
@@ -599,10 +624,12 @@ func (r *DefaultRuleRenderer) endpointIptablesChain(
 		//              At least the magic 1 and 2 need to be combined with the equivalent in CalculateActions.
 		// No profile matched the packet: drop it.
 		// if dropIfNoProfilesMatched {
-		rules = append(rules, generictables.Rule{
-			Match:  r.NewMatch(),
-			Action: r.Nflog(nflogGroup, CalculateNoMatchProfileNFLOGPrefixStr(dir), 0),
-		})
+		if r.FlowLogsEnabled {
+			rules = append(rules, generictables.Rule{
+				Match:  r.NewMatch(),
+				Action: r.Nflog(nflogGroup, CalculateNoMatchProfileNFLOGPrefixStr(dir), 0),
+			})
+		}
 
 		rules = append(rules, generictables.Rule{
 			Match:   r.NewMatch(),
@@ -718,6 +745,15 @@ func (g *PolicyGroup) ChainName() string {
 
 func (g *PolicyGroup) ShouldBeInlined() bool {
 	return len(g.PolicyNames) <= 1
+}
+
+func (g *PolicyGroup) HasNonStagedPolicies() bool {
+	for _, n := range g.PolicyNames {
+		if !model.PolicyIsStaged(n) {
+			return true
+		}
+	}
+	return false
 }
 
 // PolicyGroupSliceStringer provides a String() method for a slice of

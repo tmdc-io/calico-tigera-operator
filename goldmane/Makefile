@@ -49,11 +49,20 @@ protobuf proto/api.pb.go: proto/api.proto
 	$(MAKE) fix-changed
 
 ###############################################################################
+# Generate files
+###############################################################################
+GENERATED_FILES=proto/api.pb.go
+gen-files: $(GENERATED_FILES) gen-mocks
+
+###############################################################################
 # UTs
 ###############################################################################
 ci: static-checks ut
 ut:
-	$(DOCKER_GO_BUILD) go test ./... -cover -count 1
+	$(DOCKER_GO_BUILD) go test ./... -coverprofile coverage.profile -count 1
+
+gen-mocks:
+	$(DOCKER_RUN) $(CALICO_BUILD) sh -c 'mockery'
 
 ###############################################################################
 # Release
@@ -66,15 +75,9 @@ release-build: .release-$(VERSION).created
 	$(MAKE) clean image-all RELEASE=true
 	$(MAKE) retag-build-images-with-registries RELEASE=true IMAGETAG=$(VERSION)
 	$(MAKE) retag-build-images-with-registries RELEASE=true IMAGETAG=latest
+	touch $@
 
-release-verify: release-prereqs
-	@echo "Nothing to do"
-
-release-publish: release-prereqs release-verify .release-$(VERSION).published
+release-publish: release-prereqs .release-$(VERSION).published
 .release-$(VERSION).published:
 	$(MAKE) push-images-to-registries push-manifests IMAGETAG=$(VERSION) RELEASE=$(RELEASE) CONFIRM=$(CONFIRM)
-	$(MAKE) FIPS=true push-images-to-registries push-manifests IMAGETAG=$(VERSION)-fips RELEASE=$(RELEASE) CONFIRM=$(CONFIRM)
-
-	# Push Windows images.
-	$(MAKE) release-windows IMAGETAG=$(VERSION) CONFIRM=$(CONFIRM)
 	touch $@

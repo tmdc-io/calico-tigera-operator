@@ -28,6 +28,7 @@ spec:
       {{- range .Values.imagePullSecrets }}
         - name: {{ . }}
       {{- end }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -129,4 +130,4 @@ spec:
           volumeMounts:
             - name: calico-resources
               mountPath: /calico-resources
-{{- end}}
+{{- end }}

@@ -4,7 +4,7 @@
 #
 # Example: --set-file imagePullSecrets.gcr=./pull-secret.json
 imagePullSecrets: {}
-
+namespace: {}
 installation:
   enabled: true
   kubernetesProvider: ""

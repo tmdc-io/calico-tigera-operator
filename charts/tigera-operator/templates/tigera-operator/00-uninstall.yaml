@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: tigera-operator-uninstall
-  namespace: {{.Release.Namespace}}
+  namespace: {{.Values.namespace}}
   labels:
     helm.sh/chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
     {{- include "tigera-operator.labels" (dict "context" .) | nindent 4 }}
